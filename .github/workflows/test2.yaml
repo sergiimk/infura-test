@@ -1,0 +1,67 @@
+name: test2
+on:
+  schedule:
+    - cron: "30 * * * *"
+  workflow_dispatch: {}
+concurrency: test2
+env:
+  INFURA_IPFS_PROJECT_ID: ${{ secrets.INFURA_IPFS_PROJECT_ID_2 }}
+  INFURA_IPFS_PROJECT_SECRET: ${{ secrets.INFURA_IPFS_PROJECT_SECRET_2 }}
+  IPFS_HTTP_GATEWAY: https://dweb.link
+jobs:
+  test:
+    name: Test Infura Pinning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ibnesayeed/setup-ipfs@master
+        with:
+          ipfs_version: ^0.17
+          run_daemon: true
+
+      - name: Generate File & Add to local IPFS
+        id: add-file
+        shell: bash
+        run: |
+          openssl rand -base64 -out data.txt 1024
+          ipfs_cid=$(ipfs add -q --cid-version 1 --raw-leaves data.txt)
+
+          echo "New file's IPFS CID: $ipfs_cid"
+          echo "CID=$ipfs_cid" >> $GITHUB_OUTPUT
+
+      - name: Try to pin in Infura
+        shell: bash
+        env:
+          CID: ${{ steps.add-file.outputs.CID }}
+          PIN_TRIES: "10"
+        run: |
+          for i in $(seq 1 $PIN_TRIES); do
+            echo "Pinning CID (attempt $i)"
+
+            response=$(curl -sS -X POST \
+              -u "$INFURA_IPFS_PROJECT_ID:$INFURA_IPFS_PROJECT_SECRET" \
+              "https://ipfs.infura.io:5001/api/v0/pin/add?arg=$CID")
+
+            pinned=$(echo "$response" | jq -r ".Pins[0]")
+            if [ "$pinned" == "$CID" ]; then
+              echo "Pinned successfully!"
+              break
+            else
+              echo "Pinning service returned an error: $response"
+
+              peers_num=$(ipfs swarm peers | wc -l)
+              echo "IPFS is connected to $peers_num peers"
+
+              echo "IPFS addresses:"
+              ipfs id
+
+              # if curl -s --fail "$IPFS_HTTP_GATEWAY/ipfs/$CID" > /dev/null; then
+              #   echo "CID is RESOLVABLE via public gateway !!!"
+              # else
+              #   echo "CID is NOT resolvable via public gateway :("
+              # fi
+
+              if [ $i == $PIN_TRIES ]; then
+                exit 1
+              fi
+            fi
+          done
